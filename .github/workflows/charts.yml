@@ -2,7 +2,7 @@ name: Make charts
 
 on:
   schedule:
-    - cron: "17 * * * *"      # every hour at :17 UTC - publishes any new ECMWF / GFS run
+    - cron: "17 * * * *"      # every hour at :17 UTC - publishes any new run of every model
   workflow_dispatch: {}        # "Run workflow" button for a manual run
 
 jobs:
@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: [ifs, gfs, aifs, aigfs]
+        model: [ifs, gfs, aifs, aigfs, cmc, icon]
     concurrency:
       group: charts-${{ matrix.model }}
       cancel-in-progress: false
