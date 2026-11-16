@@ -1,0 +1,34 @@
+name: Global Tphigrams
+
+on:
+  schedule:
+    - cron: "37 * * * *"      # every hour at :37 UTC - draws every new radiosonde ascent reported worldwide
+  workflow_dispatch: {}        # "Run workflow" button for a manual run
+
+concurrency:
+  group: tphi
+  cancel-in-progress: false
+
+jobs:
+  tphi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Feed files already downloaded and decoded in earlier runs
+        uses: actions/cache@v4
+        with:
+          path: feed_cache
+          key: tphi-feed-${{ github.run_id }}
+          restore-keys: tphi-feed-
+      - run: pip install numpy matplotlib pillow requests eccodes boto3
+      - run: python tphi_publish.py --hours 30
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          SITE_NAME: globalweathercharts.com
