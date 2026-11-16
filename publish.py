@@ -1,7 +1,7 @@
 """Automatic job: for one model, find the newest run; if it is not on R2 yet, download it,
 draw every chart, upload to R2, update the run list and delete runs older than the newest KEEP.
 
-Usage: python publish.py ifs|gfs [--run YYYYMMDDHH] [--dry-run]
+Usage: python publish.py ifs|gfs|aifs|aigfs|cmc|icon [--run YYYYMMDDHH] [--dry-run]
 Needs environment variables R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY (GitHub secrets).
 
 Layout in the bucket:
@@ -52,6 +52,9 @@ AI_HOURS = (0, 12)        # the AI models are charted for their 00Z and 12Z runs
 
 def newest_run(model):
     import datetime as dt
+    if model in ("cmc", "icon"):
+        from fetch_more import latest_run
+        return latest_run(model).strftime("%Y%m%d%H")
     if model in ("gfs", "aigfs"):
         from fetch_gfs import latest_run
         return latest_run(model, AI_HOURS if model == "aigfs" else (0, 6, 12, 18)).strftime("%Y%m%d%H")
@@ -65,6 +68,9 @@ def newest_run(model):
 
 
 def download(model, run):
+    if model in ("cmc", "icon"):
+        from fetch_more import fetch
+        return fetch(model, run)[0]
     if model in ("gfs", "aigfs"):
         from fetch_gfs import fetch
         return fetch(run, model=model)[0]
@@ -80,7 +86,7 @@ def download(model, run):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("model", choices=["ifs", "gfs", "aifs", "aigfs"]); ap.add_argument("--run"); ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("model", choices=["ifs", "gfs", "aifs", "aigfs", "cmc", "icon"]); ap.add_argument("--run"); ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     t0 = time.time()
     s3 = None if a.dry_run else r2()

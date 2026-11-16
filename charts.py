@@ -44,6 +44,8 @@ LABELS = {
     "aifs":  ("ECMWF AIFS 0.25°",  "Data: ECMWF open data (CC BY 4.0)"),
     "gfs":   ("NOAA GFS 0.25°",    "Data: NOAA/NCEP GFS"),
     "aigfs": ("NOAA AIGFS 0.25°",  "Data: NOAA/NCEP AIGFS"),
+    "cmc":   ("CMC GDPS (regridded 0.25°)", "Data: ECCC (OGL-Canada)"),
+    "icon":  ("DWD ICON (regridded 0.25°)", "Data: Deutscher Wetterdienst (DWD)"),
 }
 
 
@@ -53,7 +55,9 @@ def static_orography():
 
 
 def load_run(run_dir):
-    if os.path.exists(os.path.join(run_dir, "index.json")):
+    if os.path.exists(os.path.join(run_dir, "meta.json")):
+        load_npy(run_dir)
+    elif os.path.exists(os.path.join(run_dir, "index.json")):
         load_gfs(run_dir)
     else:
         load_ifs(run_dir)
@@ -63,6 +67,15 @@ def load_run(run_dir):
         DATA["vo500"] = vorticity(DATA["u500"], DATA["v500"])
     postprocess()
     return DATA
+
+
+def load_npy(run_dir):
+    """CMC / ICON: fields already on the 0.25° grid, written by fetch_more.py."""
+    meta = json.load(open(os.path.join(run_dir, "meta.json")))
+    DATA.update(model=meta["model"], steps=meta["steps"], init=dt.datetime.strptime(meta["run"], "%Y%m%d%H"),
+                lat=np.linspace(90, -90, 721), lon=np.arange(-180, 180, 0.25), orog=static_orography())
+    for f in os.listdir(run_dir):
+        if f.endswith(".npy"): DATA[f[:-4]] = np.load(os.path.join(run_dir, f), mmap_mode=None if f == "msl.npy" else "r")
 
 
 def vorticity(u_kt, v_kt):
