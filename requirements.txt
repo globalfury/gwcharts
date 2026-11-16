@@ -1,0 +1,10 @@
+numpy
+scipy
+xarray
+cfgrib
+eccodes
+ecmwf-opendata
+matplotlib
+cartopy
+pillow
+boto3
