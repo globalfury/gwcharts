@@ -39,19 +39,51 @@ def _open(path, short, level=None):
     return da
 
 
+LABELS = {
+    "ifs":   ("ECMWF IFS 0.25°",   "Data: ECMWF open data (CC BY 4.0)"),
+    "aifs":  ("ECMWF AIFS 0.25°",  "Data: ECMWF open data (CC BY 4.0)"),
+    "gfs":   ("NOAA GFS 0.25°",    "Data: NOAA/NCEP GFS"),
+    "aigfs": ("NOAA AIGFS 0.25°",  "Data: NOAA/NCEP AIGFS"),
+}
+
+
+def static_orography():
+    here = os.path.dirname(os.path.abspath(__file__))
+    return np.load(os.path.join(here, "orography_0p25.npz"))["z"].astype(np.float32)
+
+
 def load_run(run_dir):
     if os.path.exists(os.path.join(run_dir, "index.json")):
         load_gfs(run_dir)
     else:
         load_ifs(run_dir)
+    lab, cred = LABELS[DATA["model"]]
+    DATA.update(label=lab, credit=cred)
+    if "vo500" not in DATA:
+        DATA["vo500"] = vorticity(DATA["u500"], DATA["v500"])
     postprocess()
     return DATA
+
+
+def vorticity(u_kt, v_kt):
+    """Relative vorticity (1e-5 s-1) on the regular lat-lon grid from winds in knots."""
+    a = 6.371e6; lat = np.radians(DATA["lat"]).astype(np.float64)
+    dphi = abs(lat[1] - lat[0]); dlam = np.radians(abs(DATA["lon"][1] - DATA["lon"][0]))
+    cos = np.maximum(np.cos(lat), 0.05)[:, None]; tan = np.tan(lat)[:, None]
+    out = np.empty_like(u_kt)
+    for k in range(u_kt.shape[0]):
+        u = u_kt[k].astype(np.float64) / KT; v = v_kt[k].astype(np.float64) / KT
+        dvdx = (np.roll(v, -1, 1) - np.roll(v, 1, 1)) / (2 * dlam * a * cos)        # longitude wraps round
+        dudy = -np.gradient(u, axis=0) / (dphi * a)                                  # rows run north -> south
+        out[k] = ((dvdx - dudy + u * tan / a) * 1e5).astype(np.float32)
+    return out
 
 
 def load_gfs(run_dir):
     """NOAA GFS 0.25°: messages listed in index.json (written by fetch_gfs.py)."""
     import eccodes
     meta = json.load(open(os.path.join(run_dir, "index.json")))
+    model = meta.get("model", "gfs")
     steps = sorted({s for s, _ in meta["messages"]})
     k_of = {s: i for i, s in enumerate(steps)}
     nlat, nlon = 721, 1440
@@ -67,30 +99,35 @@ def load_gfs(run_dir):
             arr[k_of[step]] = vals
     lat = np.linspace(90, -90, nlat); lon = np.linspace(-180, 179.75, nlon)
     f = (2 * 7.2921e-5 * np.sin(np.radians(lat)))[:, None].astype(np.float32)
-    DATA.update(model="gfs", label="NOAA GFS 0.25°", credit="Data: NOAA/NCEP GFS",
-                steps=steps, init=dt.datetime.strptime(meta["run"], "%Y%m%d%H"), lat=lat, lon=lon,
-                orog=store["orog"], msl=store["msl"] / 100.0,
+    DATA.update(model=model, steps=steps, init=dt.datetime.strptime(meta["run"], "%Y%m%d%H"), lat=lat, lon=lon,
+                orog=store["orog"] if "orog" in store else static_orography(), msl=store["msl"] / 100.0,
                 tp=store.get("tp", np.zeros_like(store["msl"])), u10=store["u10"] * KT, v10=store["v10"] * KT,
-                mucape=store["mucape"], tcwv=store["tcwv"], vo500=(store["absv500"] - f) * 1e5,
                 t850=store["t850"] - 273.15)
+    if "mucape" in store: DATA["mucape"] = store["mucape"]
+    if "tcwv" in store: DATA["tcwv"] = store["tcwv"]
+    if "absv500" in store: DATA["vo500"] = (store["absv500"] - f) * 1e5
     for L in (850, 500, 200):
         DATA[f"gh{L}"] = store[f"gh{L}"]; DATA[f"u{L}"] = store[f"u{L}"] * KT; DATA[f"v{L}"] = store[f"v{L}"] * KT
 
 
 def load_ifs(run_dir):
     sfc, pl, const = (os.path.join(run_dir, f) for f in ("sfc.grib2", "pl.grib2", "const.grib2"))
+    ai = not os.path.exists(const)                                   # AIFS runs have no constants file
     msl = _open(sfc, "msl")
     DATA["steps"] = [int(s / np.timedelta64(1, "h")) for s in msl.step.values]
     DATA["init"] = dt.datetime(1970, 1, 1) + dt.timedelta(seconds=int(msl.time.values.astype("datetime64[s]").astype(int)))
     DATA["lat"], DATA["lon"] = msl.latitude.values, msl.longitude.values
-    z = _open(const, "z").values / 9.80665
-    DATA["orog"] = z
+    DATA["orog"] = static_orography() if ai else _open(const, "z").values / 9.80665
     f32 = lambda a: np.asarray(a, dtype=np.float32)
     DATA["msl"] = f32(msl.values / 100.0)
-    DATA["tp"] = f32(_open(sfc, "tp").values * 1000.0)
+    tp = _open(sfc, "tp")                                            # IFS gives metres, AIFS gives kg m-2 (= mm)
+    DATA["tp"] = f32(tp.values * (1000.0 if tp.attrs.get("GRIB_units", "m") == "m" else 1.0))
     DATA["u10"] = f32(_open(sfc, "10u").values * KT); DATA["v10"] = f32(_open(sfc, "10v").values * KT)
-    DATA["mucape"] = f32(_open(sfc, "mucape").values); DATA["tcwv"] = f32(_open(sfc, "tcwv").values)
-    for short, levs in (("gh", (850, 500, 200)), ("u", (850, 500, 200)), ("v", (850, 500, 200)), ("t", (850,)), ("vo", (500,))):
+    if ai:
+        DATA["tcwv"] = f32(_open(sfc, "tcw").values)                  # total column water (vapour + cloud)
+    else:
+        DATA["mucape"] = f32(_open(sfc, "mucape").values); DATA["tcwv"] = f32(_open(sfc, "tcwv").values)
+    for short, levs in (("gh", (850, 500, 200)), ("u", (850, 500, 200)), ("v", (850, 500, 200)), ("t", (850,))) + ((() if ai else (("vo", (500,)),))):
         da = _open(pl, short)
         for L in levs:
             a = da.sel(isobaricInhPa=L).values
@@ -98,7 +135,7 @@ def load_ifs(run_dir):
             if short == "t": a = a - 273.15
             if short == "vo": a = a * 1e5
             DATA[f"{short}{L}"] = f32(a)
-    DATA.update(model="ifs", label="ECMWF IFS 0.25°", credit="Data: ECMWF open data (CC BY 4.0)")
+    DATA["model"] = "aifs" if ai else "ifs"
 
 
 def postprocess():
@@ -239,7 +276,10 @@ def draw_boundaries(ax, reg, glob):
             bx = box(x0 - 2, y0 - 2, x1 + 2, y1 + 2)
             parts = [g.intersection(bx)]
             if x1 > 180: parts.append(affinity.translate(g, xoff=360).intersection(bx))
-        parts = [p for p in parts if not p.is_empty]
+        def lines_only(g):                       # an intersection can also return stray points
+            if g.geom_type in ("LineString", "MultiLineString"): return [g]
+            return [x for x in getattr(g, "geoms", []) if x.geom_type in ("LineString", "MultiLineString")]
+        parts = [x for p in parts for x in lines_only(p) if not x.is_empty]
         if parts:
             ax.add_geometries(parts, pc, facecolor="none", edgecolor=col, linewidth=lw, zorder=3)
 
@@ -274,7 +314,11 @@ def draw(field_key, region_key, step, out_path):
     cf = None
     if sh is not None:
         cmap = F["cmap"]; norm = BoundaryNorm(F["levels"], cmap.N)
-        cf = ax.contourf(lons, lats, cut(sh), levels=F["levels"], cmap=cmap, norm=norm, extend=F["extend"], transform=pc)
+        if glob:   # project the grid points first: avoids cartopy failing on very ragged shaded areas
+            LO, LA = np.meshgrid(lons, lats)
+            cf = ax.contourf(LO, LA, cut(sh), levels=F["levels"], cmap=cmap, norm=norm, extend=F["extend"], transform=pc, transform_first=True)
+        else:
+            cf = ax.contourf(lons, lats, cut(sh), levels=F["levels"], cmap=cmap, norm=norm, extend=F["extend"], transform=pc)
     draw_boundaries(ax, reg, glob)
     if not glob:
         ax.add_feature(cfeature.LAKES.with_scale("50m"), facecolor="none", edgecolor="#555", linewidth=0.4)
@@ -319,6 +363,8 @@ def draw(field_key, region_key, step, out_path):
 
     init = DATA["init"]; valid = init + dt.timedelta(hours=step)
     H = fig.get_figheight(); top = 1 - 0.32 / H
+    if field_key == "pwat" and DATA["model"] == "aifs":
+        F = dict(F, title="Total column water (mm), MSLP (hPa)", unit="Total column water (mm)")
     title = F["title"] if not glob else F["title"].replace(", 10 m wind (kt)", "").replace(", wind (kt)", "")
     fig.text(0.04, top, DATA["label"] + " · " + title, fontsize=12.5 if len(title) < 70 else 11, fontweight="bold", va="top")
     fig.text(0.04, top - 0.30 / H, f"Init: {init:%HZ %a %d %b %Y}   Forecast hour: {step}   Valid: {valid:%HZ %a %d %b %Y}",
@@ -337,6 +383,13 @@ def draw(field_key, region_key, step, out_path):
     Image.open(buf).convert("RGB").quantize(colors=128, method=Image.Quantize.FASTOCTREE).save(out_path, "PNG", optimize=True)
 
 
+NEEDS = {"cape": "mucape", "pwat": "tcwv"}
+
+
+def available_fields():
+    return [f for f in FIELDS if NEEDS.get(f, "msl") in DATA]
+
+
 def _job(args):
     f, r, s, path = args
     draw(f, r, s, path)
@@ -352,7 +405,7 @@ def main():
     run = DATA["init"].strftime("%Y%m%d%H")
     regions = a.regions.split(",") if a.regions else list(REGIONS)
     steps = [int(s) for s in a.steps.split(",")] if a.steps else DATA["steps"]
-    fields = a.fields.split(",") if a.fields else list(FIELDS)
+    fields = [f for f in (a.fields.split(",") if a.fields else list(FIELDS)) if f in available_fields()]
     jobs = [(f, r, s, os.path.join(a.out, DATA["model"], run, f, r, f"{s:03d}.png")) for f in fields for r in regions for s in steps]
     print(f"run {run}: {len(jobs)} charts, data loaded in {time.time() - t0:.0f}s", flush=True)
     import multiprocessing as mp
@@ -360,7 +413,7 @@ def main():
         for n, _ in enumerate(pool.imap_unordered(_job, jobs, chunksize=4), 1):
             if n % 200 == 0: print(f"  {n}/{len(jobs)}  {time.time() - t0:.0f}s", flush=True)
     man = dict(model=DATA["model"], label=DATA["label"], run=run, init=DATA["init"].isoformat() + "Z", steps=DATA["steps"],
-               fields={f: FIELDS[f]["name"] for f in FIELDS}, regions={r: REGIONS[r]["name"] for r in REGIONS})
+               fields={f: FIELDS[f]["name"] for f in available_fields()}, regions={r: REGIONS[r]["name"] for r in REGIONS})
     with open(os.path.join(a.out, DATA["model"], run, "manifest.json"), "w") as fh: json.dump(man, fh, indent=1)
     print(f"done {len(jobs)} charts in {time.time() - t0:.0f}s", flush=True)
 

@@ -2,7 +2,7 @@
 
 Draws weather model charts for globalweathercharts.com.
 
-- **Models:** ECMWF IFS 0.25° (ECMWF open data, CC BY 4.0) and NOAA GFS 0.25° (public domain)
+- **Models:** ECMWF IFS and AIFS 0.25° (ECMWF open data, CC BY 4.0); NOAA GFS and AIGFS 0.25° (public domain)
 - **Charts:** MSLP & 6-h precipitation, total precipitation, 500 hPa height & vorticity, 850 hPa temperature, 200 hPa jet, CAPE, precipitable water
 - **Regions:** Global, India, North Indian Ocean, Mediterranean to India, East Asia, West Pacific, Australia, Europe, Africa & Middle East, North America, Tropical Atlantic, South America
 

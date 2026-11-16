@@ -16,12 +16,16 @@ BUCKET = os.environ.get("R2_BUCKET", "gwcharts")
 KEEP = 2
 
 
+def env(name):
+    return os.environ[name].strip()        # ignore stray spaces / line breaks pasted into the secrets
+
+
 def r2():
     import boto3
     from botocore.config import Config
     return boto3.client(
-        "s3", endpoint_url=os.environ.get("R2_ENDPOINT") or f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
-        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"], aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+        "s3", endpoint_url=os.environ.get("R2_ENDPOINT") or f"https://{env('R2_ACCOUNT_ID')}.r2.cloudflarestorage.com",
+        aws_access_key_id=env("R2_ACCESS_KEY_ID"), aws_secret_access_key=env("R2_SECRET_ACCESS_KEY"),
         region_name="auto", config=Config(retries={"max_attempts": 8, "mode": "adaptive"}, max_pool_connections=32))
 
 
@@ -43,25 +47,32 @@ def put(s3, key, body, ctype, cache):
     s3.put_object(Bucket=BUCKET, Key=key, Body=body, ContentType=ctype, CacheControl=cache)
 
 
+AI_HOURS = (0, 12)        # the AI models are charted for their 00Z and 12Z runs only (keeps R2 use in the free tier)
+
+
 def newest_run(model):
     import datetime as dt
-    if model == "gfs":
+    if model in ("gfs", "aigfs"):
         from fetch_gfs import latest_run
-        return latest_run().strftime("%Y%m%d%H")
+        return latest_run(model, AI_HOURS if model == "aigfs" else (0, 6, 12, 18)).strftime("%Y%m%d%H")
     from ecmwf.opendata import Client
-    run = Client(source="ecmwf", model="ifs", resol="0p25").latest(type="fc", step=90, param="msl")
+    if model == "aifs":
+        run = Client(source="ecmwf", model="aifs-single", resol="0p25").latest(type="fc", step=240, param="msl")
+        while run.hour not in AI_HOURS: run -= dt.timedelta(hours=6)
+    else:
+        run = Client(source="ecmwf", model="ifs", resol="0p25").latest(type="fc", step=90, param="msl")
     return run.strftime("%Y%m%d%H")
 
 
 def download(model, run):
-    if model == "gfs":
+    if model in ("gfs", "aigfs"):
         from fetch_gfs import fetch
-        return fetch(run)[0]
+        return fetch(run, model=model)[0]
     from fetch_ifs import fetch
     last = None
     for source in ("ecmwf", "aws"):                       # ECMWF portal first, AWS mirror as fallback
         try:
-            return fetch(run, source=source)[0]
+            return fetch(run, source=source, model=model)[0]
         except Exception as e:
             last = e; print(f"download from {source} failed: {e}", flush=True)
     raise last
@@ -69,7 +80,7 @@ def download(model, run):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("model", choices=["ifs", "gfs"]); ap.add_argument("--run"); ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("model", choices=["ifs", "gfs", "aifs", "aigfs"]); ap.add_argument("--run"); ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     t0 = time.time()
     s3 = None if a.dry_run else r2()

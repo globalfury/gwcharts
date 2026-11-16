@@ -1,6 +1,6 @@
-"""Download one ECMWF IFS open-data run (0.25°) for the chart steps.
-Usage: python fetch.py [YYYYMMDDHH]   (default: latest available run)
-Writes data/ifs/<run>/sfc.grib2 and data/ifs/<run>/const.grib2"""
+"""Download one ECMWF open-data run (0.25°) for the chart steps: IFS (physics model) or AIFS (AI model).
+Usage: python fetch_ifs.py [YYYYMMDDHH] [ifs|aifs]   (default: latest available IFS run)
+Writes data/<model>/<run>/sfc.grib2, pl.grib2 (+ const.grib2 for IFS)"""
 import os, sys, datetime as dt
 from ecmwf.opendata import Client
 
@@ -13,30 +13,39 @@ def chart_steps(hour):
     return list(range(0, 241, 6)) if hour in (0, 12) else list(range(0, 91, 6))
 
 
-def fetch(run=None, root="data/ifs", source="ecmwf"):
-    c = Client(source=source, model="ifs", resol="0p25")
+# AIFS has no CAPE or vorticity output; vorticity is computed from the winds, tcw stands in for tcwv
+AIFS_SFC = ["msl", "tp", "10u", "10v", "tcw"]
+AIFS_PL = {"gh": [850, 500, 200], "t": [850], "u": [850, 500, 200], "v": [850, 500, 200]}
+
+
+def fetch(run=None, root=None, source="ecmwf", model="ifs"):
+    ai = model == "aifs"
+    root = root or f"data/{model}"
+    c = Client(source=source, model="aifs-single" if ai else "ifs", resol="0p25")
     if run is None:
-        run = c.latest(type="fc", step=90, param="msl")          # newest run whose files are complete
+        run = c.latest(type="fc", step=240 if ai else 90, param="msl")   # newest run whose files are complete
     else:
         run = dt.datetime.strptime(run, "%Y%m%d%H")
     out = os.path.join(root, run.strftime("%Y%m%d%H"))
     os.makedirs(out, exist_ok=True)
-    steps = chart_steps(run.hour)
+    steps = list(range(0, 241, 6)) if ai else chart_steps(run.hour)
+    SFC_, PL_ = (AIFS_SFC, AIFS_PL) if ai else (SFC, PL)
     sfc = os.path.join(out, "sfc.grib2")
     if not os.path.exists(sfc):
-        c.retrieve(date=run.strftime("%Y%m%d"), time=run.hour, type="fc", step=steps, param=SFC, target=sfc + ".part")
+        c.retrieve(date=run.strftime("%Y%m%d"), time=run.hour, type="fc", step=steps, param=SFC_, target=sfc + ".part")
         os.replace(sfc + ".part", sfc)
     pl = os.path.join(out, "pl.grib2")
     if not os.path.exists(pl):
-        levels = sorted({l for v in PL.values() for l in v})
+        levels = sorted({l for v in PL_.values() for l in v})
         c.retrieve(date=run.strftime("%Y%m%d"), time=run.hour, type="fc", step=steps, levtype="pl",
-                   levelist=levels, param=list(PL), target=pl + ".part")
+                   levelist=levels, param=list(PL_), target=pl + ".part")
         os.replace(pl + ".part", pl)
     const = os.path.join(out, "const.grib2")
-    if not os.path.exists(const):
+    if not ai and not os.path.exists(const):
         c.retrieve(date=run.strftime("%Y%m%d"), time=run.hour, type="fc", step=0, param=["z", "lsm"], levtype="sfc", target=const)
     return out, run, steps
 
 
 if __name__ == "__main__":
-    print(*fetch(sys.argv[1] if len(sys.argv) > 1 else None))
+    a = sys.argv[1:]
+    print(*fetch(a[0] if a and a[0].isdigit() else None, model=a[-1] if a and not a[-1].isdigit() else "ifs"))
