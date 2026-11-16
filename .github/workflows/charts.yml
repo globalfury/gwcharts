@@ -1,0 +1,35 @@
+name: Make charts
+
+on:
+  schedule:
+    - cron: "17 * * * *"      # every hour at :17 UTC - publishes any new ECMWF / GFS run
+  workflow_dispatch: {}        # "Run workflow" button for a manual run
+
+jobs:
+  charts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [ifs, gfs]
+    concurrency:
+      group: charts-${{ matrix.model }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/cache@v4
+        with:
+          path: ~/.local/share/cartopy
+          key: cartopy-natural-earth-v1
+      - run: pip install -r requirements.txt
+      - run: python publish.py ${{ matrix.model }}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          SITE_NAME: globalweathercharts.com
