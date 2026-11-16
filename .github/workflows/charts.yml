@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: [ifs, gfs]
+        model: [ifs, gfs, aifs, aigfs]
     concurrency:
       group: charts-${{ matrix.model }}
       cancel-in-progress: false
