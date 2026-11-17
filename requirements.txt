@@ -8,3 +8,5 @@ matplotlib
 cartopy
 pillow
 boto3
+pandas
+shapely

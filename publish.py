@@ -1,5 +1,5 @@
 """Automatic job: for one model, find the newest run; if it is not on R2 yet, download it,
-draw every chart, upload to R2, update the run list and delete runs older than the newest KEEP.
+draw every chart, upload to R2, update the run list and delete runs older than KEEP_DAYS (7 days, like Tropical Tidbits).
 
 Usage: python publish.py ifs|gfs|aifs|aigfs|cmc|icon [--run YYYYMMDDHH] [--dry-run]
 Needs environment variables R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY (GitHub secrets).
@@ -9,11 +9,11 @@ Layout in the bucket:
   <model>/<run>/manifest.json        written last = run complete
   <model>/runs.json                  newest first, what the website reads
 """
-import os, sys, json, time, argparse, subprocess, shutil
+import os, sys, json, time, calendar, argparse, subprocess, shutil
 from concurrent.futures import ThreadPoolExecutor
 
 BUCKET = os.environ.get("R2_BUCKET", "gwcharts")
-KEEP = 2
+KEEP_DAYS = float(os.environ.get("KEEP_DAYS", "7"))   # runs older than this are deleted
 
 
 def env(name):
@@ -127,7 +127,10 @@ def main():
 
     runs = get_json(s3, f"{a.model}/runs.json", [])
     runs = sorted(set(runs) | {run}, reverse=True)
-    keep, drop = runs[:KEEP], runs[KEEP:]
+    newest = time.strptime(runs[0], "%Y%m%d%H")
+    cut = time.strftime("%Y%m%d%H", time.gmtime(calendar.timegm(newest) - KEEP_DAYS * 86400))
+    keep = [r for r in runs if r >= cut]
+    drop = [r for r in runs if r < cut]
     put(s3, f"{a.model}/runs.json", json.dumps(keep), "application/json", "public, max-age=120")
 
     for old in drop:                                       # remove older runs (deletes are free on R2)
