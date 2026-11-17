@@ -1,0 +1,42 @@
+name: Cyclone (ECMWF ENS)
+
+on:
+  schedule:
+    # ECMWF cyclone tracks: 00 UTC run is out about 07:45 UTC, 12 UTC run about 19:45 UTC.
+    # Checked every hour for a few hours after that; a run already published is skipped in seconds.
+    - cron: "35 7-11 * * *"
+    - cron: "35 19-23 * * *"
+  workflow_dispatch:
+    inputs:
+      run: {description: "Run YYYYMMDDHH (empty = latest)", required: false, default: ""}
+      force: {description: "Redo even if already published (1 = yes)", required: false, default: "0"}
+
+concurrency:
+  group: cyclone
+  cancel-in-progress: false
+
+jobs:
+  ens:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/cache@v4
+        with:
+          path: ~/.local/share/cartopy
+          key: cartopy-natural-earth-cyclone-v1
+      - run: pip install -r requirements.txt
+      - run: |
+          ARGS=""
+          [ -n "${{ github.event.inputs.run }}" ] && ARGS="--run ${{ github.event.inputs.run }}"
+          [ "${{ github.event.inputs.force }}" = "1" ] && ARGS="$ARGS --force"
+          python cyclone_ens.py $ARGS
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          SITE_NAME: globalweathercharts.com
