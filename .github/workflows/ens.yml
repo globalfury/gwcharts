@@ -1,0 +1,40 @@
+name: Ensemble charts (EPS + GEFS)
+
+on:
+  schedule:
+    - cron: "52 * * * *"      # every hour at :52 UTC - publishes any new 00Z/12Z run of each ensemble
+  workflow_dispatch:
+    inputs:
+      run:
+        description: "Run to (re)draw, YYYYMMDDHH (empty = newest)"
+        required: false
+        default: ""
+
+jobs:
+  ens:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [eps, gefs]
+    concurrency:
+      group: ens-${{ matrix.model }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/cache@v4
+        with:
+          path: ~/.local/share/cartopy
+          key: cartopy-natural-earth-v1
+      - run: pip install -r requirements.txt
+      - run: python ens_publish.py ${{ matrix.model }} ${{ github.event.inputs.run && format('--run {0}', github.event.inputs.run) || '' }}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          SITE_NAME: globalweathercharts.com
