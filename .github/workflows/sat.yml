@@ -1,0 +1,32 @@
+name: Satellite
+
+on:
+  schedule:
+    - cron: "22,47 * * * *"   # twice an hour: draws each new hourly scan (Himawari-9, GOES-19, GOES-18, NOAA global mosaic) as soon as it is out
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: "How many past hours to fill (use 24 for the first run)"
+        default: "3"
+
+concurrency:
+  group: sat
+  cancel-in-progress: false
+
+jobs:
+  sat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install numpy matplotlib pillow requests boto3 netCDF4 pyproj satpy pyresample pyorbital defusedxml
+      - run: python sat_publish.py --hours ${{ github.event.inputs.hours || '3' }}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          SITE_NAME: globalweathercharts.com
