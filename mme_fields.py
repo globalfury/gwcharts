@@ -1,5 +1,5 @@
-"""Download MSLP and 10 m wind of one run of each open global model and put them on one 0.25° grid over the
-North Indian Ocean (lat -5..35 N, lon 35..105 E). Used by cyclone_mme.py (the MME tab of the Cyclones page).
+"""Download MSLP and 10 m wind of one run of each open global model and put them on one global 0.25° grid
+(lat 50 S..50 N, lon 0..359.75 E). Used by cyclone_mme.py (the MME tab of the Cyclones page).
 
 Models (all open data, 00 and 12 UTC runs, every 6 h):
   ifs   ECMWF IFS HRES 0.25°  (ECMWF open data, CC BY 4.0)               0-240 h
@@ -16,8 +16,8 @@ import os, io, bz2, tempfile, datetime as dt, urllib.request, urllib.error
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
-LAT = np.arange(-5, 35.001, 0.25)
-LON = np.arange(35, 105.001, 0.25)
+LAT = np.arange(-50, 50.001, 0.25)
+LON = np.arange(0, 360, 0.25)
 UA = {"User-Agent": "gwcharts"}
 
 STEPS = {"ifs": range(0, 241, 6), "aifs": range(0, 241, 6), "gfs": range(0, 241, 6), "aigfs": range(0, 241, 6),
@@ -62,15 +62,17 @@ def exists(u, tries=3):
 
 # ---------------------------------------------------------------- regridding
 def to_grid(a, lat, lon):
-    """Bilinear interpolation of a regular lat/lon field a[lat, lon] (any order, 0..360 or -180..180) to LAT x LON."""
+    """Bilinear interpolation of a global regular lat/lon field a[lat, lon] (any order, 0..360 or -180..180) to LAT x LON."""
     from scipy.interpolate import RegularGridInterpolator
-    lon = (np.asarray(lon, float) + 180) % 360 - 180
+    lon = np.asarray(lon, float) % 360
     lat = np.asarray(lat, float)
     jj = np.where((lat >= LAT[0] - 1) & (lat <= LAT[-1] + 1))[0]
-    ii = np.where((lon >= LON[0] - 1) & (lon <= LON[-1] + 1))[0]
-    sub = a[np.ix_(jj, ii)]; la, lo = lat[jj], lon[ii]
-    oj, oi = np.argsort(la), np.argsort(lo)
-    f = RegularGridInterpolator((la[oj], lo[oi]), sub[np.ix_(oj, oi)], bounds_error=False, fill_value=None)
+    sub = a[jj]; la = lat[jj]
+    oj, oi = np.argsort(la), np.argsort(lon)
+    la, lo, sub = la[oj], lon[oi], sub[np.ix_(oj, oi)]
+    lo = np.concatenate([lo[-1:] - 360, lo, lo[:1] + 360])               # wrap around 0/360
+    sub = np.concatenate([sub[:, -1:], sub, sub[:, :1]], axis=1)
+    f = RegularGridInterpolator((la, lo), sub, bounds_error=False, fill_value=None)
     LA, LO = np.meshgrid(LAT, LON, indexing="ij")
     return f((LA, LO)).astype(np.float32)
 
@@ -195,7 +197,7 @@ def _icon(run):
         finally: eccodes.codes_release(g)
     clat = raw(get(ICON_C.format(h=h, low="clat", r=r, up="CLAT")))
     clon = raw(get(ICON_C.format(h=h, low="clon", r=r, up="CLON")))
-    keep = np.where((clat > LAT[0] - 2) & (clat < LAT[-1] + 2) & (clon > LON[0] - 2) & (clon < LON[-1] + 2))[0]
+    keep = np.where((clat > LAT[0] - 2) & (clat < LAT[-1] + 2))[0]
 
     def xyz(la, lo):
         la, lo = np.radians(la), np.radians(lo)

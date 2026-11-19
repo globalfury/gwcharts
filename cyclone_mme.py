@@ -1,14 +1,18 @@
-"""Multi-model ensemble (MME) of open global models for the Bay of Bengal and the Arabian Sea -> R2 (cyclone/mme/...).
+"""Multi-model ensemble (MME) of open global models for tropical cyclones in every basin -> R2 (cyclone/mme/...).
 
 For each 00/12 UTC run it takes MSLP and 10 m wind from every open model as soon as that model's run is complete
 (mme_fields.py: ECMWF HRES and AIFS, NCEP GFS, NOAA AIGFS, CMC GDPS, DWD ICON, UKMO Global), tracks every
-depression / cyclone with one and the same tracker (mme_track.py), puts the tracks of the same storm from the
-different models together, and makes, for each system:
+depression / cyclone worldwide with one and the same tracker (mme_track.py), puts the tracks of the same storm from
+the different models together, sorts the systems into the basins of the ECMWF ENS tab (Bay of Bengal, Arabian Sea,
+West / East / Central Pacific, North Atlantic, South-West Indian Ocean, Australian region, South Pacific) and makes,
+for each system:
   landfall summary (consensus + every model), tracks map, MSW plume, MSLP plume, track spread,
   run-comparison table (same storm in up to 6 runs), package zip, consensus track, all model tracks (csv).
 The consensus is the plain (equal-weight) mean of the models tracking the system at that time (at least 3).
-Storm numbers and names (e.g. 05B AKVAN) and the observed track come from the JTWC best
-track as relayed by NCAR/RAL TCGP (public).
+Systems shown: in the Bay of Bengal and the Arabian Sea every depression tracked by at least 2 models; elsewhere
+storms that reach 34 kt (tropical storm) in at least 2 models while still over the tropical sea, or that JTWC has
+numbered (same rule as the ECMWF ENS tab).
+Storm numbers and names (e.g. 05B AKVAN) and the observed track come from the JTWC best track as relayed by NCAR/RAL TCGP (public).
 
 Each model's tracks are stored as soon as they are made (cyclone/mme/<run>/tracks.json), so a later invocation
 only fetches the models that were not ready yet and re-draws the products with the larger set.
@@ -48,6 +52,7 @@ MODELS = {
 }
 ORDER = list(MODELS)
 MATCH_KM, CONS_MIN = 350.0, 3
+GRID_VERSION = "global-0.25-v2"                   # stored tracks made with another tracker version are redone
 WAIT_HOURS = 16                                   # stop waiting for a missing model this long after the run time
 C_CONS, C_OBS = E.C_MEAN, "#222222"
 SRC = f"Data: ECMWF (CC BY 4.0), NOAA, ECCC, DWD, Met Office (CC BY-SA 4.0) · same tracker for all models · {SITE}"
@@ -57,21 +62,45 @@ def name(m): return MODELS[m][0]
 def short(m): return MODELS[m][1]
 
 
+# ---------------------------------------------------------------- basins (same letters as the ECMWF ENS tab)
+def basin_of(lat, lon):
+    """Basin letter from a position (any longitude convention); None outside the TC basins (South Atlantic, Red Sea...)."""
+    lon = (lon + 180) % 360 - 180
+    if lat >= 0:
+        if 42 <= lon < 77.5: return "A"
+        if 77.5 <= lon < 100: return "B"
+        if lon >= 100: return "W"
+        if lon < -140: return "C"
+        if lon < -100: return "E"
+        if lon < -77.5:                                   # Central America: Pacific side = E, Caribbean / Gulf = L
+            return "E" if lat < np.interp(lon, [-100, -92, -85, -77.5], [18, 15, 11, 8.5]) else "L"
+        if lon < 20: return "L"
+        return None
+    if 20 <= lon < 90: return "S"
+    if 90 <= lon < 160: return "U"
+    if lon >= 160 or lon < -120: return "P"
+    return None
+
+
+def conv(lon, b):
+    """Longitudes in the basin's drawing convention (0..360 for the basins that can cross 180°)."""
+    return lon % 360 if b in E.SHIFT else (lon + 180) % 360 - 180
+
+
 # ---------------------------------------------------------------- observed storms (JTWC best track via NCAR/RAL TCGP)
 TCGP = "https://hurricanes.ral.ucar.edu/realtime/"
 
 
 def jtwc_storms(run):
-    """North Indian Ocean storms / invests in TCGP's current list: [dict(sid, name, fixes DataFrame t, lat, lon, w)]."""
+    """Storms / invests in TCGP's current list, all basins: [dict(sid, name, fixes DataFrame t, lat, lon (0..360), w)]."""
     out = []
     try:
         html = urllib.request.urlopen(urllib.request.Request(TCGP + "current/", headers=mme_fields.UA), timeout=60).read().decode("latin-1")
     except Exception as e:
         print("  (TCGP list not available:", e, ")"); return out
-    for path in sorted(set(re.findall(r'plots/northindian/(\d{4})/(io\d{6})/', html))):
-        y, sid = path
+    for reg, y, sid in sorted(set(re.findall(r'plots/([a-z_]+)/(\d{4})/([a-z]{2}\d{6})/', html))):
         try:
-            txt = urllib.request.urlopen(urllib.request.Request(f"{TCGP}plots/northindian/{y}/{sid}/b{sid}.dat",
+            txt = urllib.request.urlopen(urllib.request.Request(f"{TCGP}plots/{reg}/{y}/{sid}/b{sid}.dat",
                                                                 headers=mme_fields.UA), timeout=60).read().decode("latin-1")
         except Exception:
             continue
@@ -80,20 +109,29 @@ def jtwc_storms(run):
             f = [x.strip() for x in l.split(",")]
             if len(f) < 9 or not f[6][:-1].isdigit(): continue
             la = int(f[6][:-1]) / 10 * (1 if f[6][-1] == "N" else -1); lo = int(f[7][:-1]) / 10 * (1 if f[7][-1] == "E" else -1)
-            rows.append(dict(t=pd.Timestamp(dt.datetime.strptime(f[2], "%Y%m%d%H")), lat=la, lon=lo, w=float(f[8] or 0)))
-            if len(f) > 27 and f[27] and f[27] not in ("INVEST", "NONAME"): nm = f[27]
+            rows.append(dict(t=pd.Timestamp(dt.datetime.strptime(f[2], "%Y%m%d%H")), lat=la, lon=lo % 360, w=float(f[8] or 0)))
+            if len(f) > 27 and f[27] and f[27] not in ("NONAME",) and not f[27].startswith("INVEST"): nm = f[27].upper()
         if not rows: continue
         df = pd.DataFrame(rows).drop_duplicates("t").sort_values("t").reset_index(drop=True)
-        num = int(sid[2:4]); basin = "B" if df.lon.iloc[-1] >= 77.5 else "A"
-        out.append(dict(sid=f"{num:02d}{basin}" if num < 90 else f"Invest {num}{basin}", name=nm.upper() if nm else "", fixes=df))
+        num = int(sid[2:4]); lo = df.lon.iloc[-1]
+        letter = {"io": "B" if lo >= 77.5 else "A", "wp": "W", "al": "L", "ep": "E", "cp": "C",
+                  "sh": "S" if lo < 135 else "P"}.get(sid[:2], sid[0].upper())
+        out.append(dict(sid=f"{num:02d}{letter}" if num < 90 else f"Invest {num}{letter}", name=nm, fixes=df))
     return out
 
 
 # ---------------------------------------------------------------- grouping the models' tracks into systems
 def tdf(points):
+    """Track points -> DataFrame indexed by time, longitudes made continuous (no jump at 0/360)."""
     d = pd.DataFrame(points)
     d["t"] = pd.to_datetime(d.t, format="%Y%m%d%H")
-    return d.set_index("t")[["lat", "lon", "w", "p"]]
+    lo = d.lon.to_numpy(float)
+    d["lon"] = lo[0] + np.r_[0, np.cumsum(mme_track.dlon(lo[:-1], lo[1:]))]
+    land = d["land"].astype(bool) if "land" in d else pd.Series(False, index=d.index)
+    trop = d[(d.lat.abs() <= mme_track.TROPIC_LAT) & ~land]
+    out = d.set_index("t")[["lat", "lon", "w", "p"]]
+    out.attrs["tpk"] = float(trop.w.max()) if len(trop) else 0.0           # peak wind while over the tropical sea
+    return out
 
 
 def match_km(a, b):
@@ -104,7 +142,8 @@ def match_km(a, b):
 
 
 def consensus(members):
-    a = pd.concat([d.assign(m=m) for m, d in members.items()]).reset_index()
+    ref = next(iter(members.values())).lon.iloc[0]
+    a = pd.concat([d.assign(m=m, lon=ref + mme_track.dlon(ref, d.lon.to_numpy())) for m, d in members.items()]).reset_index()
     g = a.groupby("t")
     c = pd.DataFrame(dict(n=g.size(), lat=g.lat.mean(), lon=g.lon.mean(), w=g.w.mean(), p=g.p.mean()))
     need = min(CONS_MIN, len(members))
@@ -112,7 +151,7 @@ def consensus(members):
 
 
 def find_systems(tracks):
-    """tracks: {model: [list of points]} -> systems [dict(members={model: DataFrame}, cons=DataFrame)] with >= 2 models."""
+    """tracks: {model: [list of points]} -> systems [dict(members={model: DataFrame}, cons, basin, ts)] with >= 2 models."""
     pool = [(m, tdf(tr["points"])) for m in ORDER for tr in tracks.get(m, [])]
     pool.sort(key=lambda x: -x[1].w.max())
     used, systems = set(), []
@@ -129,20 +168,25 @@ def find_systems(tracks):
             if best:
                 used.add(best[1]); mem[m] = pool[best[1]][1]
                 c = consensus(mem); ref = c if len(c) >= 2 else ref
-        if len(mem) >= 2:
-            c = consensus(mem)
-            if len(c): systems.append(dict(members={m: mem[m] for m in ORDER if m in mem}, cons=c))
-    for s in systems:
-        r0 = s["cons"].iloc[0]; s["basin"] = "B" if r0.lon >= 77.5 else "A"; s["la0"], s["lo0"] = float(r0.lat), float(r0.lon)
-    systems.sort(key=lambda s: ("BA".index(s["basin"]), -len(s["members"]), s["lo0"]))
-    n = {}
-    for s in systems:
-        n[s["basin"]] = n.get(s["basin"], 0) + 1; s["id"] = f"{s['basin'].lower()}{n[s['basin']]}"
+        if len(mem) < 2: continue
+        c = consensus(mem)
+        if not len(c): continue
+        b = basin_of(float(c.lat.iloc[0]), float(c.lon.iloc[0]))
+        if b is None: continue
+        ts = sum(d.attrs.get("tpk", 0) >= 34 for d in mem.values())        # models with a tropical storm
+        members = {}
+        for m in ORDER:
+            if m in mem:
+                d = mem[m].copy(); d["lon"] = conv(d.lon, b); members[m] = d
+        c = c.copy(); c["lon"] = conv(c.lon, b)
+        systems.append(dict(members=members, cons=c, basin=b, ts=int(ts), la0=float(c.lat.iloc[0]), lo0=float(c.lon.iloc[0])))
+    systems.sort(key=lambda s: (E.ORDER.index(s["basin"]), -len(s["members"]), s["lo0"]))
     return systems
 
 
 def label_systems(systems, run, storms):
-    """Name each system after the observed storm it starts at (JTWC number + name), else 'system n'."""
+    """Name each system after the observed storm it starts at (JTWC number + name); keep only the systems to show;
+    give them ids b1, b2, w1 ... in basin order."""
     t0 = pd.Timestamp(run)
     for s in systems:
         s["sid"], s["storm"], s["obs"] = "", "", None
@@ -157,8 +201,13 @@ def label_systems(systems, run, storms):
         if best:
             st, fx = best[1], best[2]
             s["sid"], s["storm"] = st["sid"], st["name"]
-            s["obs"] = fx[fx.t >= t0 - pd.Timedelta(hours=72)]
-    for b in "BA":
+            o = fx[fx.t >= t0 - pd.Timedelta(hours=72)].copy(); o["lon"] = conv(o.lon, s["basin"]); s["obs"] = o
+    numbered = lambda s: s["sid"] and not s["sid"].startswith("Invest")
+    systems[:] = [s for s in systems if s["basin"] in E.NIO or s["ts"] >= 2 or numbered(s)]
+    n = {}
+    for s in systems:
+        n[s["basin"]] = n.get(s["basin"], 0) + 1; s["id"] = f"{s['basin'].lower()}{n[s['basin']]}"
+    for b in E.ORDER:
         same = [s for s in systems if s["basin"] == b]
         for k, s in enumerate(same):
             tag = (f"{s['sid']} {s['storm']}".strip() if s["sid"] else (f"system {k + 1}" if len(same) > 1 else ""))
@@ -171,6 +220,7 @@ def products(s, run, out, nmodels_run):
     b = s["basin"]; IC = f"{run:%H} UTC {run:%d %b %Y}"; BN = s["name"]; pc = ccrs.PlateCarree()
     M, C = s["members"], s["cons"]
     allp = pd.concat([d.assign(model=m) for m, d in M.items()]).reset_index()
+    shift = b in E.SHIFT
     ext = E.frame(b, allp)
     if s["obs"] is not None and len(s["obs"]):                                  # keep the observed track in view
         o = s["obs"]; ext = [min(ext[0], o.lon.min() - 1), max(ext[1], o.lon.max() + 1), min(ext[2], o.lat.min() - 1), max(ext[3], o.lat.max() + 1)]
@@ -180,7 +230,7 @@ def products(s, run, out, nmodels_run):
                 bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.85))
     nm = len(M)
     # M1 tracks
-    fig, ax = E.make_axes(ext, False); E.basemap(ax, ext, b)
+    fig, ax = E.make_axes(ext, shift); E.basemap(ax, ext, b)
     if s["obs"] is not None and len(s["obs"]):
         o = s["obs"]
         ax.plot(o.lon, o.lat, "--", color=C_OBS, lw=1.6, zorder=3, transform=pc, label=f"Observed {s['sid']} (JTWC, last 72 h)")
@@ -204,7 +254,7 @@ def products(s, run, out, nmodels_run):
         fig, (ax, an) = plt.subplots(2, 1, figsize=(12, 7.5), sharex=True, gridspec_kw=dict(height_ratios=[5, 1], hspace=0.08))
         if var == "w":
             top = max(np.nanmax(allp.w) + 8, 40); ax.set_ylim(10, top)
-            for lo, hi, n, col in E.CATS_NIO:
+            for lo, hi, n, col in (E.CATS_NIO if b in E.NIO else E.CATS_SS):
                 if lo <= top:
                     ax.axhspan(lo, min(hi + 1, top), color=col, zorder=0)
                     ax.text(1.005, (lo + min(hi + 1, top)) / 2, n, transform=ax.get_yaxis_transform(), va="center", fontsize=9, fontweight="bold")
@@ -239,7 +289,7 @@ def products(s, run, out, nmodels_run):
 
     # landfall of every model and of the consensus
     bb = box(min(allp.lon.min(), ext[0]) - 5, max(-80, allp.lat.min() - 5), max(allp.lon.max(), ext[1]) + 5, min(80, allp.lat.max() + 5))
-    LAND = prep(unary_union(E.shifted(E.land_geoms(), bb, False)))
+    LAND = prep(unary_union(E.shifted(E.land_geoms(), bb, shift)))
     names = E.coast_names(b, ext)
     lf_df = lambda d: d.reset_index()[["t", "lat", "lon", "w", "p"]]
     c_lf = E.landfall(lf_df(C), LAND)
@@ -359,7 +409,8 @@ def models_for(run, st, a):
     """Load the stored tracks of this run, fetch + track the models that are ready now. Returns (state, changed)."""
     ic = f"{run:%Y%m%d%H}"
     state = st.get_json(f"{PREFIX}/{ic}/tracks.json", {"ic": ic, "models": {}})
-    if a.force: state["models"] = {}
+    if a.force or state.get("grid") != GRID_VERSION: state["models"] = {}      # tracks from an older tracker are redone
+    state["grid"] = GRID_VERSION
     changed = False
     for m in ORDER:
         if m in state["models"] or (a.models and m not in a.models.split(",")): continue
@@ -377,7 +428,7 @@ def models_for(run, st, a):
                 print(f"  {name(m)} {ic}: not complete yet"); continue
             tr = mme_track.track(f, run)
             for x in tr:
-                for p in x["points"]: p.pop("land", None); p["vort"] = round(p["vort"] * 1e5, 1)
+                for p in x["points"]: p["land"] = int(p.get("land", 0)); p["vort"] = round(p["vort"] * 1e5, 1)
                 x["points"] = [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in p.items()} for p in x["points"]]
             state["models"][m] = {"steps": len(f["steps"]), "tracks": tr}
             changed = True
@@ -396,7 +447,7 @@ def publish_run(run, st, a, storms):
     have = [m for m in ORDER if m in state["models"]]
     old = next((r for r in index["runs"] if r["ic"] == ic), None)
     age = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - run).total_seconds() / 3600
-    if not changed and old and not a.force and not a.redraw:
+    if not changed and old and old.get("grid") == GRID_VERSION and not a.force and not a.redraw:
         print(f"MME {ic}: nothing new ({len(have)} models)"); return
     if len(have) < 3 and age < WAIT_HOURS and not a.force:
         print(f"MME {ic}: only {len(have)} model(s) so far — waiting for at least 3"); return
@@ -412,7 +463,7 @@ def publish_run(run, st, a, storms):
     work = os.path.join(a.work, ic)
     import shutil; shutil.rmtree(work, ignore_errors=True)
     missing = [m for m in ORDER if m not in have]
-    entry = {"ic": ic, "label": label, "models": have, "missing": missing, "waiting": bool(missing) and age < WAIT_HOURS,
+    entry = {"ic": ic, "label": label, "grid": GRID_VERSION, "models": have, "missing": missing, "waiting": bool(missing) and age < WAIT_HOURS,
              "v": int(time.time()) % 100000, "systems": []}
     for s in systems:
         try:
@@ -474,8 +525,8 @@ def main():
         if not index["runs"]: todo = [todo[0] - dt.timedelta(hours=24), todo[0] - dt.timedelta(hours=12)] + todo   # first time: 2 days
         done = {r["ic"]: r for r in index["runs"]}
         now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
-        finished = lambda r: f"{r:%Y%m%d%H}" in done and (not done[f"{r:%Y%m%d%H}"].get("missing")
-                                                          or (now - r).total_seconds() > WAIT_HOURS * 3600)
+        finished = lambda r: f"{r:%Y%m%d%H}" in done and done[f"{r:%Y%m%d%H}"].get("grid") == GRID_VERSION and (
+            not done[f"{r:%Y%m%d%H}"].get("missing") or (now - r).total_seconds() > WAIT_HOURS * 3600)
         todo = [r for r in todo if not finished(r)]
     storms = jtwc_storms(todo[-1]) if todo else []
     for r in todo:
