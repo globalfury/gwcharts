@@ -1,0 +1,42 @@
+name: Cyclone MME (open models)
+
+on:
+  schedule:
+    # 00 UTC run: GFS/ICON/UKMO/CMC complete about 03:30-05:30 UTC, ECMWF about 06:30-08:00 UTC.
+    # Each call only fetches the models that were not ready before; nothing new = finished in seconds.
+    - cron: "50 3-11 * * *"
+    - cron: "50 15-23 * * *"
+  workflow_dispatch:
+    inputs:
+      run: {description: "Run YYYYMMDDHH (empty = latest)", required: false, default: ""}
+      force: {description: "Redo every model (1 = yes)", required: false, default: "0"}
+
+concurrency:
+  group: cyclone-mme
+  cancel-in-progress: false
+
+jobs:
+  mme:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/cache@v4
+        with:
+          path: ~/.local/share/cartopy
+          key: cartopy-natural-earth-cyclone-v1
+      - run: pip install -r requirements.txt h5py
+      - run: |
+          ARGS=""
+          [ -n "${{ github.event.inputs.run }}" ] && ARGS="--run ${{ github.event.inputs.run }}"
+          [ "${{ github.event.inputs.force }}" = "1" ] && ARGS="$ARGS --force"
+          python cyclone_mme.py $ARGS
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          SITE_NAME: globalweathercharts.com
