@@ -1,0 +1,38 @@
+name: Live map (wind)
+
+on:
+  schedule:
+    - cron: "25 4-10,16-22 * * *"   # GFS 00Z/12Z reach +240 h ~4 h after run time, ECMWF ~8 h; a run is published once, later tries skip it
+  workflow_dispatch:
+    inputs:
+      run:
+        description: "Run YYYYMMDDHH (leave empty for the newest 00/12 UTC run)"
+        default: ""
+      force:
+        description: "Publish again even if this run is already live"
+        type: boolean
+        default: false
+
+jobs:
+  map:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [ifs, gfs]
+    concurrency:
+      group: live-map-${{ matrix.model }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install numpy eccodes pillow boto3 ecmwf-opendata
+      - run: python map_publish.py ${{ matrix.model }} ${{ github.event.inputs.run }} ${{ github.event.inputs.force == 'true' && '--force' || '' }}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
