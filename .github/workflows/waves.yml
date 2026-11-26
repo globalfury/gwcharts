@@ -1,0 +1,42 @@
+name: ECMWF MJO-Waves
+
+on:
+  schedule:
+    - cron: "12 8-14 * * *"   # ECMWF ENS 00 UTC reaches day 15 ~08 UTC; a run is published once, later tries skip it
+  workflow_dispatch:
+    inputs:
+      run:
+        description: "ENS 00 UTC run YYYYMMDD (leave empty for the newest)"
+        default: ""
+      force:
+        description: "Publish again even if this run is already live"
+        type: boolean
+        default: false
+
+concurrency:
+  group: waves
+  cancel-in-progress: false
+
+jobs:
+  waves:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: CPC Blended OLR files kept from earlier runs
+        uses: actions/cache@v4
+        with:
+          path: waves_cache
+          key: waves-cbo-${{ github.run_id }}
+          restore-keys: waves-cbo-
+      - run: pip install numpy matplotlib pillow eccodes boto3
+      - run: python waves_publish.py ${{ github.event.inputs.run && format('--run {0}', github.event.inputs.run) || '' }} ${{ github.event.inputs.force == 'true' && '--force' || '' }}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          SITE_NAME: globalweathercharts.com
